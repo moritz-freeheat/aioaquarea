@@ -86,6 +86,7 @@ class Client:
         session: aiohttp.ClientSession,
         username: str,
         password: str,
+        token: str = None,
         refresh_login: bool = True,
         logger: Optional[logging.Logger] = None,
     ):
@@ -94,6 +95,7 @@ class Client:
         self._sess = session
         self._username = username
         self._password = password
+        self._token = token
         self._refresh_login = refresh_login
         self._logger = logger or logging.getLogger("aioaquarea")
         self._token_expiration: Optional[datetime] = None
@@ -108,6 +110,15 @@ class Client:
     def password(self) -> str:
         """Return the password"""
         return self._password
+    
+    @property
+    def token(self) -> Optional[str]:
+        return self._token
+
+    @token.setter
+    def token(self, value: str) -> None:
+        self._token = value
+        self._sess._cookie_jar.update_cookies({"token": self._token})
 
     @property
     def is_refresh_login_enabled(self) -> bool:
@@ -186,6 +197,10 @@ class Client:
 
     async def login(self) -> None:
         """Login to Aquarea and stores a token in the session"""
+        if self._token:
+            # If a token was provided, use that instead of logging in.
+            self._sess._cookie_jar.update_cookies({"token": self._token})
+            return
         intent = datetime.now()
         await self._login_lock.acquire()
         try:
