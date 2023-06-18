@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import functools
 import logging
 from typing import List, Optional
 import urllib.parse
+from yarl import URL
 
 import aiohttp
 
@@ -42,7 +43,7 @@ def auth_required(fn):
     @functools.wraps(fn)
     async def _wrap(client, *args, **kwargs):
         if client.is_logged is False:
-            client.logger.warning(f"{client}: User is not logged or session is too old")
+            client.logger.warning(f"{client}: Token almost expired. Please refresh soon.")
             await client.login()
 
         try:
@@ -51,18 +52,7 @@ def auth_required(fn):
             client.logger.warning(
                 f"{client}: Auth Error: {exception.error_code} - {exception.error_message}."
             )
-
-            # If the error is invalid credentials, we don't want to retry the request.
-            if (
-                exception.error_code
-                == AuthenticationErrorCodes.INVALID_USERNAME_OR_PASSWORD
-                or not client.is_refresh_login_enabled
-            ):
-                raise
-
-            client.logger.warning(f"{client}: Trying to login again.")
-            await client.login()
-            response = await fn(client, *args, **kwargs)
+            raise
 
         return response
 
@@ -84,47 +74,21 @@ class Client:
     def __init__(
         self,
         session: aiohttp.ClientSession,
-        username: str,
-        password: str,
-        token: str = None,
-        refresh_login: bool = True,
         logger: Optional[logging.Logger] = None,
     ):
 
         self._login_lock = asyncio.Lock()
         self._sess = session
-        self._username = username
-        self._password = password
-        self._token = token
-        self._refresh_login = refresh_login
+        self._token = None
         self._logger = logger or logging.getLogger("aioaquarea")
         self._token_expiration: Optional[datetime] = None
         self._last_login: datetime = datetime.min
-
-    @property
-    def username(self) -> str:
-        """The username used to login"""
-        return self._username
-
-    @property
-    def password(self) -> str:
-        """Return the password"""
-        return self._password
     
     @property
     def token(self) -> Optional[str]:
+        """Return the session token"""
         return self._token
-
-    @token.setter
-    def token(self, value: str) -> None:
-        self._token = value
-        self._sess._cookie_jar.update_cookies({"token": self._token})
-
-    @property
-    def is_refresh_login_enabled(self) -> bool:
-        """Return True if the client is allowed to refresh the login"""
-        return self._refresh_login
-
+    
     @property
     def token_expiration(self) -> Optional[datetime]:
         """Return the expiration date of the token"""
@@ -195,12 +159,24 @@ class Client:
             for error in data.get("message", {})
         ]
 
-    async def login(self) -> None:
+    async def login(self, username: Optional[str] = None, password: Optional[str] = None, token: Optional[str] = None) -> None:
         """Login to Aquarea and stores a token in the session"""
-        if self._token:
-            # If a token was provided, use that instead of logging in.
-            self._sess._cookie_jar.update_cookies({"token": self._token})
+        if self._token or token:
+            # If a token was provided (or is still saved in the session), use that instead of logging in.
+            if token:
+                self._token = token
+                # Get the current time in UTC
+                now = datetime.astimezone(datetime.utcnow(), tz=timezone.utc)
+                # Add 23 hours to the current time
+                self._token_expiration = now + timedelta(hours=23)
+
+                self._logger.info(
+                    f"Authorizing with new Token: {self.token}. Token Expiration: {self._token_expiration}"
+                )
+            # Update session cookies
+            self._sess._cookie_jar.update_cookies({"accessToken": self._token}, URL(AQUAREA_SERVICE_BASE))
             return
+        
         intent = datetime.now()
         await self._login_lock.acquire()
         try:
@@ -209,8 +185,8 @@ class Client:
 
             params = {
                 "var.inputOmit": "false",
-                "var.loginId": self.username,
-                "var.password": self.password,
+                "var.loginId": username,
+                "var.password": password,
             }
 
             response: aiohttp.ClientResponse = await self.request(
@@ -229,8 +205,11 @@ class Client:
                 data["accessToken"]["expires"], "%Y-%m-%dT%H:%M:%S%z"
             )
 
+            access_token_cookie = self._sess.cookie_jar.filter_cookies(AQUAREA_SERVICE_BASE).get('accessToken')
+            self._token = access_token_cookie.value if access_token_cookie else None
+
             self._logger.info(
-                f"Login successful for {self.username}. Access Token Expiration: {self._token_expiration}"
+                f"Login successful with user credentials. Access Token Expiration: {self._token_expiration}"
             )
 
             self._last_login = datetime.now()
