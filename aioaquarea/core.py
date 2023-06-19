@@ -171,7 +171,7 @@ class Client:
                 self._token_expiration = now + timedelta(hours=23)
 
                 self._logger.info(
-                    f"Authorizing with new Token: {self.token}. Token Expiration: {self._token_expiration}"
+                    f"Authorizing with new Token. Estimated Token Expiration: {self._token_expiration}"
                 )
             # Update session cookies
             self._sess._cookie_jar.update_cookies({"accessToken": self._token}, URL(AQUAREA_SERVICE_BASE))
